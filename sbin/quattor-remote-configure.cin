@@ -1,0 +1,977 @@
+#!@PERL_EXECUTABLE@
+#
+# quattor-remote-configure
+#
+# Copyright (C) 2009  Contributor
+#
+
+=pod
+
+=head1 NAME
+
+quattor-remote-configure : dispatcher for the QRC (Quattor Remote Configuration) subsystem
+
+    quattor toolkit http://www.quattor.org
+    
+=head1 SYNOPSIS
+
+quattor-remote-configure --configure   [options] [--host host1,host2,host3] <component> [<component2>] ...]
+quattor-remote-configure --unconfigure [options] component
+
+(See quattor-remote-configure --help for full list of options with default values.)
+
+=head1 DESCRIPTION
+
+The tool B<quattor-remote-configure> is the front end for invoking Quattor Remote
+Components (QRCs). It is analagous to ncm-ncd (hopefully soon to be renamed 
+quattor-configure). The difference is that the tool is designed to configure remote
+devices, that may not themselves be able to run the quattor toolkit. Examples of 
+such devices include firmware based hypervisors (ie ESXi), filers, switches etc.
+
+The tool is called with a list of components to be invoked as an argument, and optionally
+a list of hosts that require configuration. If no component is specified, then all
+componenets that are currently marked active in the node configuration will be run.
+Similarly, if no hosts are specified, then all hosts that the server is responsible for
+will have components run against them.
+
+The tool can be executed manually, via a scheduler such as B<cron>, or more normally via
+quattor-remote-dispatch which usually runs in response to a cdb notification.
+
+In case of deinstallation of a componenet using B<--unconfigure>, B<quattor-remote-configure>
+
+=head1 OPTIONS
+
+=over 4
+
+=item B<--configure>
+
+Run the 'configure' method for <component1,2..> (default option). For running configure on
+all components use --configure --all.
+
+=item B<--all>
+
+See above. Run --configure --all to run configure on all components
+
+=item B<--unconfigure > <component>
+
+Run the 'unconfigure' method for <component>. Only one component can be unconfigured
+at a time.
+
+=item B<--host <host1,host2,...>>
+
+A comma separate list of hosts to be configured.
+
+=item B<--group <groupname>>
+
+The name applied to the group of hosts to be configured. This is to allow locking at
+this level, rather than a global lock. Usually the scheduler would lock based on the
+service definition in templates.
+
+=item B<--datafile <file>>
+
+For complex configure/unconfigure options for multiple hosts. The file should be a
+csv with the following structure:
+
+component_name,unconfigure|configure,host1,host2,...
+
+=item B<--logdir <dir>>
+
+Directory where logfiles are written to.
+
+=item B<--lockdir <dir>>
+
+Directory where lockfiles are written to. Default is @QTTR_LOCKD@.
+
+=item --multilog
+
+use separate (per component) log files in log directory
+
+=item B<--ignorelock>
+
+Ignore existing application lock. Don't use if you don't know what you're doing.
+
+=item B<--forcelock>
+
+Take over application lock. Don't use if you don't know what you're doing.
+
+=item B<--stale_timeout <n>>
+
+Time (n) in minutes after which a lock which is held ny another node, is considered stale. Locks initiated by the same node are stale if their pids are invalid. 
+
+=item B<--retries <n>>
+
+The number of times that the program will attempt to acquire the lock before giving up.
+
+=item B<--state <dir>>
+
+Directory in which to find state files. On conclusion of any component configuration, if
+the configuration was successful then the component file will be deleted from this state
+directory. If a component produces errors, then the component file will contain the number
+of errors. In other words, if a configuration is clean then there will be no files within 
+the state directory. If there are any problems with the configuration, then there will be a
+file for the failing components. An empty file indicates that the component has not completed
+its configuration. If this option is not defined, then no state files will be maintained.
+
+The state dir will have subdirectories for each node.
+
+=item B<--timeout <n>>
+
+The maximum time in seconds between each attempt to acquire the lock.
+
+=item B<--cache_root <directory>>
+
+CCM cache root directory (optional, otherwise CCM default taken)
+
+=item B<--useprofile <profile_id> >
+
+Use <profile_id> as NVA-API configuration profile ID (Default:  latest)
+
+=item B<--nodeps>
+
+Ignore broken (pre/post) dependencies when invoking configure
+
+=item B<--autodeps <yes|no>>
+
+Expand missing pre/post dependencies in configure
+
+=item B<--allowbrokencomps>
+
+Do not stop overall execution if 'broken' components are found, just ignore
+these ('broken' components: component file missing or not instantiable)
+
+=item B<--allowbrokennodes>
+
+Do not stop overall execution if 'broken' nodes are found, just ignore. Nodes 
+are considered broken if components cannot be found for them etc.
+
+=item B<--use_fqdn>
+
+Use fully qualified names for host names
+
+=item B<--cachedir>
+
+The directory to store "foreign" profiles, ie the xml profiles of the hosts
+to be configured.
+
+=item B<--output <file>>
+
+The file to write status output to for the success/failure of individual hosts
+being processed.
+
+=head2 Other Options
+
+=over
+
+=item B<--help>
+
+Displays a help message with all options and default settings.
+
+=item B<--version>
+
+Displays application version information.
+
+=item B<--verbose>
+
+Print verbose details on operations.
+
+=item B<--debug> <1..5>
+
+Set the debugging level to <1..5>.
+
+=item B<--quiet>
+
+Suppress application output to standard output.
+
+=item B<--noaction>
+
+Do not actually perform operations.
+
+=item B<--include>
+
+Add additional directories to the include path, allowing testing
+of components before installation. The value should be a colon
+separated list of directories.
+
+=back
+
+=head1 CONFIGURATION FILE
+
+A configuration file can keep site-wide configuration settings. The location of
+the configuration file is defined in the B<--cfgfile> option. The default is
+/etc/quattor-remote-configure.conf
+
+=head1 SIGNAL HANDLING
+
+If a signal is received, quattor-remote-configure will try to finish its execution
+gracefully and will report an error (return status: -1), except if it was called
+with the B<--noaction> flag.
+
+=head1 AUTHOR
+
+Ben Jones <ben.jones@morganstanley.com>
+
+=head1 NOTES
+
+quattor-remote-configure is based on ncm-ncd and shares a lot of the same code. It
+may make sense to merge these in the future, and have the case of local component 
+execution handled alongside remote execution.
+
+=head1 MORE INFORMATION
+
+Visit B<http://www.quattor.org> for more information on the quattor toolkit.
+
+=cut
+
+#
+# Standard Common Application Framework opening sequence
+#
+
+
+#------------------------------------------------------------------------------
+# Application
+#------------------------------------------------------------------------------
+
+BEGIN {
+    unshift(@INC, "@QTTR_PERLLIB@");
+}
+
+package qrc;
+
+use VMAPI::Dependencies;
+use CAF::Application;
+use CAF::Reporter;
+use LC::Exception qw(SUCCESS throw_error);
+use EDG::WP4::CCM::CacheManager;
+use strict;
+use CAF::Lock qw(FORCE_IF_STALE FORCE_ALWAYS); # FIXME: need host based locking, not just pid
+my $ec = LC::Exception::Context->new->will_store_errors;
+our(@ISA);
+
+@ISA = qw(CAF::Application CAF::Reporter);
+
+sub app_options {
+    # these options compliment the ones defined in CAF::Application
+    push(my @array,
+    { NAME         => 'configure',
+      HELP         => 'run the configure method on the remote components',
+      DEFAULT      => undef },
+	  
+    { NAME         => 'all',
+      HELP         => 'used with --configure to run on all components',
+      DEFAULT      => undef },
+	  
+    { NAME         => 'unconfigure',
+      HELP         => 'run the unconfigure method on the component',
+      DEFAULT      => undef },
+      
+    { NAME         => 'logdir=s',
+      HELP         => 'directory to write qrc logfiles to',
+      DEFAULT      => '/var/quattor/logs/qrc' },
+
+    { NAME	   => 'lockdir=s',
+      HELP	   => 'directory to write locks to',
+      DEFAULT	   => '@QTTR_LOCKD@' },
+      
+    { NAME         => 'multilog',
+      HELP         => 'use separate component log files in log directory',
+      DEFAULT      => 1 },
+      
+    { NAME         => 'cache_root:s',
+      HELP         => 'CCM cache root directory (optional, otherwise CCM default taken',
+      DEFAULT      => undef },
+      
+    { NAME         => 'useprofile:s',
+      HELP         => 'Profile to use as configuration profile (optional, otherwise latest)',
+      DEFAULT      => undef },
+     
+    { NAME         => 'cfgfile=s',
+      HELP         => 'configuration file for qrc defaults',
+      DEFAULT      => '/etc/quattor-remote-configure.conf' },
+    
+    { NAME         => 'noaction',
+      HELP         => 'do not actually perform operations', 
+      DEFAULT      => undef },
+    
+    { NAME         => 'ignorelock',
+      HELP         => 'ignore application lock - use with care' },
+      
+    { NAME         => 'forcelock',
+      HELP         => 'take over the application lock - use with care' },
+      
+    { NAME         => 'stale_timeout=i',
+      HELP         => 'Time in minutes after which locks are considered stale. Default is 120',
+      DEFAULT      => 120 },
+      
+    { NAME         => 'retries=i',
+      HELP         => 'number of retries if quattor-remote-configure is locked',
+      DEFAULT      => 10 },
+      
+    { NAME         => 'state=s',
+      HELP         => 'directory for state files',
+      DEFAULT      => undef },
+      
+    { NAME         => 'timeout=i',
+      HELP         => 'maximum time in seconds between retries',
+      DEFAULT      => 30 },
+
+    { NAME	   => 'autodeps=s',
+      HELP	   => 'expand missing pre/post dependencies in configure',
+      DEFAULT      => 'yes' },
+     
+    { NAME	   => 'nodeps',
+      HELP	   => 'ignore broken (pre/post) dependencies in configure',
+      DEFAULT      => undef },
+       
+    { NAME         => 'allowbrokencomps',
+      HELP         => 'do not exit if componenets cannot be included',
+      DEFAULT      => undef },
+
+    { NAME         => 'allowbrokennodes',
+      HELP         => 'do not exit if there are errors processing individual nodes',
+      DEFAULT      => undef },
+            
+    { NAME         => 'cachedir=s',
+      HELP         => 'The directory to store foreign profiles',
+      DEFAULT      => '/var/tmp/qrc' },
+      
+    { NAME         => 'use_fqdn',
+      HELP         => 'Fully qualified hostnames',
+      DEFAULT      => undef },
+      
+    { NAME         => 'datafile=s',
+      HELP         => 'Specify a csv file containing Component,configure|unconfigure,host1,host2,...',
+      DEFAULT      => undef },
+      
+    { NAME         => 'output=s',
+      HELP         => 'The file to write host success/failure output to.',
+      DEFAULT      => undef },
+      
+    { NAME         => 'host=s',
+      HELP         => 'Comma separated list of hosts to be configured.',
+      DEFAULT      => undef },
+      
+    { NAME         => 'group=s',
+      HELP         => 'Name for the group of hosts being configured. Locking is at the group level if set, else global',
+      DEFAULT      => 'qrc' },
+      
+    { NAME         => 'proxy=s',
+      HELP         => 'Proxy to send the configuration to, if not direct to host (ie VMWare VC)',
+      DEFAULT      => undef },
+      
+    { NAME         => 'include=s',
+      HELP         => 'Perl include path (for finding additional components)',
+      DEFAULT      => undef },
+
+    );
+    
+    return \@array;
+}
+
+# public methods
+
+#
+# setLockedCCMConfig($node, $cacheroot): boolean
+#
+
+sub setLockCCMConfig {
+  my ($self, $node, $cacheroot) = @_;
+
+  $self->verbose('accessing CCM cache manager..');
+
+  $self->{'CACHEMGR'}->{$node} = EDG::WP4::CCM::CacheManager->new($cacheroot);
+  unless (defined $self->{'CACHEMGR'}->{$node}) {
+    throw_error ("cannot access cache manager for $node");
+    return undef;
+  }
+
+  $self->verbose('getting locked CCM configuration for $node..');
+
+  $self->{'CCM_CONFIG'}->{$node} = $self->{'CACHEMGR'}->{$node}->getLockedConfiguration(0);
+  unless (defined $self->{'CCM_CONFIG'}->{$node}) {
+    throw_error ('cannot get configuration via CCM for $node');
+    return undef;
+  }
+  return SUCCESS;
+}
+
+#
+# getCCMConfig(): ref(EDG::WP4::CCM::Configuration)
+# returns the CCM config instance for the node
+#
+
+sub getCCMConfig {
+  my ($self, $node) = @_;
+
+  return $self->{'CCM_CONFIG'}->{$node};
+}
+
+# Given a hostname, returns the directory in which the profile data should be stashed
+#
+# We only need the active profile, so we can just give the dir to the cache manager.
+# 
+sub node_to_dir {
+	my ($self, $node) = @_;
+	my $dir = $self->option("cachedir");
+	if ($self->option("use_fqdn")) {
+		my $domain = ($node =~ m{^[^\.]*\.(.*)});
+		if ($domain) {
+		  $dir .= "/$domain";
+		}
+	}
+	$dir .= "/$node";
+	return $dir;
+}
+
+#
+# lock the application
+#
+
+sub lock {
+    my ($self, $lockname, $stale_timeout) = @_;
+    my $lockfile = $self->option("lockdir") . "/$lockname";
+    $self->{LOCK} = CAF::Lock->new($lockfile);
+    my $lock_flag = FORCE_IF_STALE;
+    $lock_flag = FORCE_ALWAYS if ($self->option("forcelock"));
+    unless ($self->{LOCK}->set_lock($self->option("retries"),
+                                     $self->option("timeout"),
+                                     $lock_flag,
+				                     $self->option("stale_timeout"))) {
+                                     	return undef;
+                                     }	
+    return SUCCESS;
+}
+
+#
+# check_lock: check to see our lock is still valid or exit.
+# 
+sub check_lock {
+	my ($self) = @_;
+	if ($self->{LOCK} && $self->{LOCK}->is_set()) {
+	    return SUCCESS;
+	} else {
+	    $self->error("we no longer hold the lock " . $self->{LOCK});
+	    $self->finish(-2);
+	}
+}
+
+sub finish {
+	my ($self, $ret) = @_;
+	$self->{LOCK}->unlock() if ($self->{LOCK} && $self->{LOCK}->is_set());
+	if ($self->option('output')) {
+		if (open(OUTPUT, ">" . $self->option('output'))) {
+			while (my ($host, $status) = each %{$self->{HOST_STATUS}}) {
+				print OUTPUT "$host $status\n";
+			}
+			close(OUTPUT);
+		}
+	}
+	exit ($ret);
+}
+
+sub filenodelist{
+    my ($self, $file) = @_;
+    my %nodelist;
+    $nodelist{"hosts"} = {};
+    $nodelist{"components"} = {};
+    unless (open(FH, $file)) {
+        $self->error("Could not open datafile \"$file\" for reading");
+        $self->finish(-1);
+    }
+    my @badhosts = ();
+    while (<FH>) {
+        chomp;
+        next unless /^(\w+),(\w+),(\w+,?.*)/;
+        my ($comp, $action, @hosts) = ($1, $2, split(/,/, $3));
+        for my $h (@hosts) {
+            if (exists $nodelist{"hosts"}->{$h} and exists $nodelist{"hosts"}->{$h}->{$comp}) {
+                if ($action ne $nodelist{"hosts"}->{$h}->{$comp}) {
+                    $self->debug(5, "Node \"$h\" has both \"$action\" and \"". $nodelist{"hosts"}->{$h}->{$comp} . "\" specified for $comp.");
+                    push @badhosts, $h;
+                }
+            }
+            push @{$nodelist{"hosts"}->{$h}->{$action}}, $comp;
+        }
+        $nodelist{"components"}->{$comp}->{$action} = @hosts;
+    }
+    close(FH);
+    if (scalar @badhosts) {
+        my $badhosts = join(",", @badhosts);
+        $self->error("Multiple actions defined for following hosts: \"$badhosts\".");
+        $self->finish(-1);
+    }
+    return %nodelist;
+}
+
+sub cmdnodelist {
+    my ($self, @comps) = @_;
+    my %nodelist;
+    $nodelist{"hosts"} = {};
+    $nodelist{"components"} = {};
+    my $action;
+    my @hosts = split(/,/,$self->option("host"));
+    if ($self->option("configure")) {
+        $action = "configure";
+    } elsif ($self->option("unconfigure")) {
+        $action = "unconfigure";
+    } else {
+        # this really shouldn't have happened
+        $self->error("Neither configure or unconfigure specified as action");
+        $self->finish(-1);
+    }
+    for my $host (@hosts) {
+        for my $comp (@comps) {
+        	push @{$nodelist{"hosts"}->{$host}->{$action}}, $comp;
+            push @{$nodelist{"components"}->{$comp}->{$action}}, $host;
+        }
+    }
+    return %nodelist;
+}
+
+sub runComps {
+    my ($self, $node, $cfg, $method, $connection, @components) = @_;
+    my $method = "executeConfigComponents";
+    my $compList = Quattor::Remote::ComponentProxyList->new($node, $cfg, $connection, @components); 
+    if (not defined $compList) {
+        if ($self->option("allowbrokennodes")) {
+            $self->warn("Cannot get component(s) for node $node, skipping");
+            next;
+        } else {
+           $ec->ignore_error();
+           $self->error("Cannot get component(s) for node $node");
+           $self->finish(-1);   
+        }
+    }
+     chdir('/tmp');
+     my $ret = $compList->$method();
+     return $ret;
+}
+
+sub _initialize {
+	my ($self) = @_;
+	#
+	# define application specific data.
+	#
+	# external version number
+	$self->{'VERSION'} = '1.0';
+    #
+    # XXX usage text via pod2usage?
+    #
+    
+    # start initialization of CAF::Applicaton
+    #
+    unless ($self->SUPER::_initialize(@_)) {
+    	return undef;
+    }
+    # 
+    # ensure allowed to run
+    #
+    if ($< != 0) {
+    	# we need to be able to read profiles, which means root
+    	my $username = getpwuid($<);
+    	$self->error("Sorry $username, this program must be run by root");
+    	exit(-1);
+    }
+   
+    if (! -d $self->option("logdir")) {
+	system("mkdir -p " . $self->option("logdir"));
+    }
+    if (! -d $self->option("logdir")) {
+	# it's still not there, so die
+	$self->error("Error: can't find or create logdir \"" . $self->option("logdir") . "\"");
+	exit(-1);
+    }
+    $self->{'QRC_LOGFILE'} = $self->option("logdir") . '/qrc.log';
+    $self->{'LOG'} = CAF::Log->new($self->{'QRC_LOGFILE'}, 'at');
+    $self->{'HOST_STATUS'} = {};
+    return undef unless (defined $self->{LOG});
+    # start using log file
+    $self->set_report_logfile($self->{'LOG'});
+    if ($self->option("include")) {
+        unshift(@INC, split(/:/, $self->option("include")));
+    }
+    return SUCCESS;
+}
+
+#------------------------------------------------------------------------------
+# Main program
+#------------------------------------------------------------------------------
+
+package main;
+
+use strict;
+use MSDW::MSLog;
+use LC::Exception qw(SUCCESS throw_error);
+use EDG::WP4::CCM::CacheManager;
+
+use FindBin qw($Bin);
+use lib "$Bin/../lib/perl5";
+use Quattor::Remote::ComponentProxyList;
+use Quattor::Remote::Connector;
+
+our ($this_app, %SIG);
+
+my $ec = LC::Exception::Context->new->will_store_errors;
+$LC::Exception::Reporter=\&main::error_reporter;
+
+umask(022);
+$ENV{"PATH"} = "/bin:/sbin:/usr/bin:/usr/sbin";
+
+# unbuffer STDOUT & STDERR
+autoflush STDOUT 1;
+autoflush STDERR 1;
+
+use constant QRC_PATH   => '/system/qrc/connection';
+use constant CONN_MOD   => '/system/qrc/connection/module';
+use constant PROXY      => '/system/qrc/connection/proxy';
+
+#------------------------------------------------------------------------------
+# Functions in main program
+#------------------------------------------------------------------------------
+
+sub signal_handler {
+	my ($signal) = @_;
+	
+	# ignore further signals
+	$SIG{'INT'} = 'IGNORE';
+	$SIG{'TERM'} = 'IGNORE';
+	$SIG{'QUIT'} = 'IGNORE';
+	$SIG{'USR2'} = 'IGNORE';
+	$SIG{'HUP'} = 'IGNORE';
+	$this_app->warn('signal handler: received signal: ' . $signal);
+	unless ($this_app->option('noaction')) {
+		# handle the signal
+		$this_app->error('quattor-remote-configure exiting gracefully after signal hit.');
+		$this_app->finish(-1);
+	}
+	$this_app->finish(0);
+}
+
+#
+# report exceptions here in CAF compatible way
+#
+
+sub error_reporter {
+	my ($err, $uncaught) = @_;
+	my($stack, $depth, $frame);
+	my $report='error';
+	$report='warn' unless ($err->is_error);
+	if ($uncaught) {
+		$this_app->$report("Uncaught exception!");
+		if ($err->is_error || $this_app->option('debug') || $this_app->option('verbose')) {
+		  $this_app->$report("Calling stack is:");
+		  $stack = $err->stack;
+		  $depth = 0;
+            while ($frame = $stack->[$depth]) {
+                $this_app->report("\t", $frame->subroutine, " called at ",
+                          $frame->filename, " line ", $frame->line, "\n");
+                $depth++;
+            }
+        }
+    }
+  $this_app->$report($err->format, "\n");
+  die("finishing...") if $err->is_error;
+}
+
+sub setupLog { # XXX this is just very wrong, should be moved.
+    # Returns an MSLog object
+
+    # A word on severities,
+    # MSLogDebug     Debug messages in use for development
+    # MSLogInfo      Checks that require no changes
+    # MSLogNotice    Normal changes to a host's configuration
+    # MSLogWarning   TBD
+    # MSLogErr       Unfixable VM host, manual intervention required
+    # MSLogCrit      Can't determine machine state (e.g. host down)
+    # MSLogAlert     Scrap failure
+    # MSLogEmerg     Framework failure
+
+    # TODO: Will want to change logging destinations, especially for important alerts
+    # E.g. to Netcool for Alert and Emerg
+
+
+    $::log = new MSDW::MSLog("elfms/quattor-remote-configure/1.0", 1) or
+        throw Error::Simple($@);
+
+
+    #Disable Default so we don't get duplicates
+    $::log->destination (MSLogStderr, MSLogNone);
+
+    # If debugging everything goes out to StdErr
+    if ($this_app->option("debug") >= 3) {
+        $::log->destination(MSLogStderr, MSLogDebug);
+    } else {
+        # when scheduled, Stdout would go to /dev/null
+        # Errors end up in syslog and alerted
+        # TODO, in progress in LogRouting.pm : Netcool Alert, Emerg, Crit? here later
+
+        $::log->destination(MSLogFunction, MSLogErr, { Callback => \&routeLog });
+
+    }
+
+    # errors always go to syslog and info to our log file
+    $::log->destination(MSLogSyslog, MSLogErr,{'Facility' => 'user'});
+
+    # set umask so we create shared log directory on the host
+    umask 0000;
+
+    # just attempt to fix any badly created pre-existing directories
+    # FIXME this is all v bogus
+    my $logdir = "/var/qrc/logs";
+    mkdir($logdir);
+    chmod 0777, $logdir if (-d $logdir);
+
+    # check if existing directory has correct permissions to work around bug in MSDW::MSLog
+    # which is if the logfile can't be written, MSLogFunction silently fails to log
+    if (-d $logdir && ! -w $logdir) {
+        print getpwuid($>) . " doesn't have write access to $logdir\n";
+        if ($::checkout) {
+            print "continuing without writing log file...\n";
+        } else {
+            die("logfile required for vmapi run, please chmod 777 $logdir\n");
+        }
+    } else {
+        $::log->destination(MSLogFile,MSLogInfo,{'Path'     => $logdir.'/',
+                            'Pattern'  => 'vmJ_&h.%Y%m%d.%H%M%S',
+                            'MakePath' => 1
+                            });
+    }
+
+}
+
+
+#------------------------------------------------------------------------------
+# main loop
+#------------------------------------------------------------------------------
+
+#
+# initialize
+#
+unless ($this_app = 'qrc'->new($0,@ARGV)) {
+	die("Cannot start application");
+	exit(255);
+}
+
+# make sure we're root, we need to read profiles
+if ($< != 0) {
+	my $username = getpwuid($<);
+	$this_app->error("Sorry $username, this program must not be run by root");
+	exit(-1);
+}
+
+#
+# Handle signals properly
+#
+$SIG{'INT'} =\&signal_handler;
+$SIG{'TERM'}=\&signal_handler;
+$SIG{'QUIT'}=\&signal_handler;
+$SIG{'USR2'}=\&signal_handler;
+$SIG{'HUP'}='IGNORE';
+
+#
+# process command line options before proceeding.
+#
+
+$this_app->report();
+$this_app->log('------------------------------------------------------------');
+$this_app->info('quattor-remote-configure version ' . $this_app->version() . ' started by ' .
+                $this_app->username() . ' at: ' . scalar(localtime));
+                
+$this_app->info('Dry run, no changes will be performed (--noaction flag set)')
+    if ($this_app->option('noaction'));
+    
+unless ($this_app->option('configure') ||
+        $this_app->option('unconfigure') ||
+        $this_app->option('datafile')
+        ) {
+    $this_app->error('Please specify either configure, unconfigure or datafile as options');
+    $this_app->finish(-1);
+}
+
+if ($this_app->option('configure') && $this_app->option('unconfigure')) {
+	$this_app->error('configure and unconfigure options cannot be used simultaneously');
+	$this_app->finish(-1);
+}
+
+if (($this_app->option('configure') || $this_app->option('unconfigure')) and not $this_app->option('host')) {
+	$this_app->error("Need to specify host(s) when using configure or unconfigure options");
+	$this_app->finish(-1);
+}
+
+if ($this_app->option('datafile') && ($this_app->option('configure') || $this_app->option('unconfigure') || $this_app->option('host'))) {
+	$this_app->error('datafile option cannot be used with either configure or unconfigure');
+	$this_app->finish(-1);
+}
+
+#
+# Set the lock and either configure or unconfigure
+#
+$this_app->verbose("Checking for quattor-remote-configure locks...");
+unless ($this_app->option("ignorelock")) {
+	$this_app->lock($this_app->option("group"), $this_app->option("stale_timeout")) or $this_app->finish(-1);
+}
+
+#
+# Build the nodelist
+#
+my %nodelist;
+my @component_names = ();
+if ($this_app->option('datafile')) {
+	%nodelist = $this_app->filenodelist($this_app->option('datafile'));
+	if (scalar(keys %{$nodelist{"components"}}) <= 0 ) {
+		$this_app->error("No components or actions listed in datafile");
+		$this_app->finish(-1);
+	}
+	push @component_names, keys %{$nodelist{"components"}};
+} else {
+	# we have components and hosts detailed from the cmdline
+	#
+	# remove dupes
+	my $last = "";
+	foreach (sort(@ARGV)) {
+		next if $_ eq $0; # dunno why $0 sometimes still in @ARGV (debugger?)
+		push (@component_names, $_) if ($last ne $_);
+		$last = $_;
+	}
+	unless ($this_app->option('all') || scalar(@component_names)) {
+		$this_app->error("Please provide component names as parameters, or use --all");
+        $this_app->finish(-1);	
+	}
+	if ($this_app->option('all')) {
+		if (scalar(@component_names)) {
+			$this_app->error("Do not specify components when also using the --all option");
+			$this_app->finish(-1);
+		}
+		push(@component_names,  "all");
+	}
+	%nodelist = $this_app->cmdnodelist(@component_names);
+}
+
+setupLog(); # XXX also very wrong
+
+#
+# main loop; process the hosts
+#
+my $error_cnt = 0;
+for my $host (keys %{$nodelist{"hosts"}}) {
+    $this_app->check_lock(); # always need to ensure the lock is still valid 
+    # first need to access the node's ccm repo
+    my $host_cacheroot = $this_app->node_to_dir($host);
+    unless ($this_app->setLockCCMConfig($host, $host_cacheroot)) {
+    	$this_app->error("Cannot set locked CCM configuration");
+    	$this_app->finish(-1);
+    }
+    my $cfg = $this_app->getCCMConfig($host);
+    # FIXME - next two lines should test for the value, else we just die
+    my $qrc_tree = $cfg->getElement(QRC_PATH)->getTree();
+    my $connection_module = Quattor::Remote::Connector->new();
+    if (!$connection_module) {
+	$this_app->error("Failed to connect");
+	$ec->error->report;
+	$this_app->finish(-1);
+    }
+    my ($connector, $proxy);
+    if (exists $qrc_tree->{'module'}) {
+    	$connector = $qrc_tree->{'module'};
+    	$connector = "Quattor::Remote::Connector::" . $connector;
+    } else {
+    	$this_app->error("No connection module found at " . CONN_MOD . " for node $host");
+    	if ($this_app->option("allowbrokennodes")) {
+    		next;
+    	} else {
+    		$this_app->finish(-1);
+    	}
+    }
+    if (exists $qrc_tree->{'proxy'} && ref($qrc_tree->{'proxy'}) eq 'ARRAY') {
+    	$proxy = $qrc_tree->{'proxy'};
+    	$proxy = $$proxy[0]; # may be an array, but we only want one.
+    } else {
+    	# not having a proxy is ok.
+    	$this_app->debug(3, "No proxy defined for $host");
+    }
+
+    my $connection = $connection_module->connect($host, $cfg, $connector, $proxy);
+    my (@configure_comps, @unconfigure_comps);
+    if (defined $nodelist{"hosts"}->{$host}->{"configure"}) {
+        @configure_comps = @{$nodelist{"hosts"}->{$host}->{"configure"}};
+    }
+    if (defined $nodelist{"hosts"}->{$host}->{"unconfigure"}) {
+        @unconfigure_comps = @{$nodelist{"hosts"}->{$host}->{"unconfigure"}};
+    }
+    
+    # TODO reporting and exiting...
+    my $problems = 0;
+    my $fun = 'OK';
+    my $configure_ret;
+    my $unconfigure_ret;
+    $configure_ret->{'ERR_COMPS'} = {};
+    $unconfigure_ret->{'ERR_COMPS'} = {};
+    $configure_ret->{'WARN_COMPS'} = {};
+    $unconfigure_ret->{'WARN_COMPS'} = {};
+    if (@configure_comps) {
+    	my $method = "executeConfigComponents";
+    	$configure_ret = $this_app->runComps($host, $cfg, $method, $connection, @configure_comps);
+    	if ($configure_ret->{'ERRORS'}) {
+    		$fun = 'error';
+    		$problems = 1;
+    		$error_cnt++;
+    	} elsif ($configure_ret->{'WARNINGS'}) {
+    		$fun = 'warn';
+    	}
+    }
+    if (@unconfigure_comps) {
+    	my $method = "executeUnconfigComponents";
+    	$unconfigure_ret = $this_app->runComps($host, $cfg, $method, $connection, @unconfigure_comps);
+    	if ($unconfigure_ret->{'ERRORS'}) {
+    		$fun = 'error';
+    		$problems = 1;
+    		$error_cnt++;
+    	}
+    }
+
+    if ($problems) {
+    	$this_app->{"HOST_STATUS"}->{$host} = 1;
+    } else {
+    	$this_app->{"HOST_STATUS"}->{$host} = 0; 
+    }
+    
+    $this_app->report();
+    $this_app->report('============================================================');
+    $this_app->report();
+    
+    # Get a list of components with errors
+    
+    my %reported_errors;
+    my %reported_errors = (%{$configure_ret->{'ERR_COMPS'}}, %{$unconfigure_ret->{ERR_COMPS}});
+    my $err_comp_string = "";
+    foreach my $err_comp (keys %reported_errors) {
+    	$err_comp_string .= "$err_comp ($reported_errors{$err_comp}) ";
+    }
+    chop($err_comp_string);
+    
+    # Get the list of components with warnings
+    
+    my %reported_warnings = (%{$configure_ret->{'WARN_COMPS'}}, %{$unconfigure_ret->{'WARN_COMPS'}});
+    my $warn_comp_string = "";
+    foreach my $warn_comp (keys %reported_warnings) {
+    	$warn_comp_string .= "$warn_comp ($reported_warnings{$warn_comp}) ";
+    }
+    chomp($warn_comp_string);
+    
+    if (($configure_ret->{'ERRORS'} + $unconfigure_ret->{'ERRORS'}) > 0) {
+    	$this_app->info('Errors while configuring ' . $err_comp_string . " on $host");
+    } 
+    
+    if (($configure_ret->{'WARNINGS'} + $unconfigure_ret->{'WARNINGS'}) > 0) {
+    	$this_app->info('Warnings while configuring ' . $warn_comp_string . " on $host")
+    }
+    
+    $this_app->info(($configure_ret->{'ERRORS'} + $unconfigure_ret->{'ERRORS'}), ' errors, '.
+                    ($configure_ret->{'WARNINGS'} + $unconfigure_ret->{'WARNINGS'}), ' warnings ' .
+                    "executing on $host");
+    $connection_module->disconnect();
+}
+my $exit_code = 0;
+if ($error_cnt) {
+	$exit_code = 1;
+}
+$this_app->finish($exit_code);

@@ -1,0 +1,6 @@
+/var/log/qrc/*.log {
+    weekly
+    notifempty
+    missingok
+}
+
